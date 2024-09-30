@@ -243,6 +243,11 @@ if(MCUT_BUILD_DOCUMENTATION)
 	add_subdirectory(docs)
 endif()
 
+set_target_properties(${target_name} PROPERTIES PUBLIC_HEADER 
+  "${MCUT_INCLUDE_DIR}/mcut/mcut.h;${MCUT_INCLUDE_DIR}/mcut/platform.h"
+)
+
+
 ########################################################
 ###                   PACKAGING                      ###
 ### This is a quite INCOMPLETE set of variables that ###
@@ -261,17 +266,22 @@ if(MCUT_BUILD_AS_SHARED_LIB)
 	#
 
 	install(TARGETS ${target_name}
-			LIBRARY
-			DESTINATION lib/
-			COMPONENT dynamic_libraries)
+    EXPORT mcut-export
+    LIBRARY DESTINATION lib
+    INCLUDES DESTINATION include
+    PUBLIC_HEADER DESTINATION include
+    COMPONENT dynamic_libraries
+  )
 else()
 	#
 	# static libs
 	#
 	
 	install(TARGETS ${target_name}
-			ARCHIVE
-			DESTINATION lib/
+      EXPORT mcut-export
+			ARCHIVE DESTINATION lib/
+      INCLUDES DESTINATION include
+      PUBLIC_HEADER DESTINATION include
 			COMPONENT static_libraries)
 endif()
 
@@ -287,6 +297,13 @@ install(FILES
 		${CMAKE_CURRENT_SOURCE_DIR}/README.md
 		DESTINATION ./
 		COMPONENT text_files)
+
+  
+install(EXPORT mcut-export 
+  FILE mcut-config.cmake 
+  DESTINATION share/cmake/mcut             
+  EXPORT_LINK_INTERFACE_LIBRARIES
+)
 
 #
 # notify CPack of the names of all of the components in the project
