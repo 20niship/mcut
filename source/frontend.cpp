@@ -33,13 +33,6 @@
  *
  **************************************************************************/
 
-#include "mcut/internal/frontend.h"
-#include "mcut/internal/preproc.h"
-
-#include "mcut/internal/hmesh.h"
-#include "mcut/internal/math.h"
-#include "mcut/internal/utils.h"
-
 #include <algorithm>
 #include <array>
 #include <fstream>
@@ -52,6 +45,15 @@
 #include <string.h>
 #include <unordered_map>
 
+#include "mcut/internal/frontend.h"
+#include "mcut/internal/preproc.h"
+
+#include "mcut/internal/hmesh.h"
+#include "mcut/internal/math.h"
+#include "mcut/internal/utils.h"
+
+
+
 #include "mcut/internal/cdt/cdt.h"
 #include "mcut/internal/timer.h"
 
@@ -60,6 +62,18 @@ thread_local std::stack<std::unique_ptr<mini_timer>> g_thrd_loc_timerstack;
 #endif
 
 thread_local std::string per_thread_api_log_str;
+
+#ifdef MCUT_WITH_ARBITRARY_PRECISION_NUMBERS
+#if 1
+thread_local PoolAllocator<uint32_t> expansionObject::mempool =
+	PoolAllocator<uint8_t>(); //MultiPool(2048, 64);
+thread_local PoolAllocator<uint32_t> nfgMemoryPool = PoolAllocator<uint8_t>();
+#else
+thread_local MultiPool expansionObject::mempool = MultiPool(2048, 64); //MultiPool(2048, 64);
+thread_local MultiPool nfgMemoryPool;
+#endif
+#endif
+
 
 threadsafe_list<std::shared_ptr<context_t>> g_contexts = {};
 threadsafe_list<std::shared_ptr<event_t>> g_events = {};
@@ -610,7 +624,12 @@ void wait_for_events_impl(
         } else {
             if (event_ptr->m_future.valid()) {
 
-                event_ptr->m_future.wait(); // block until event task is finished
+                /*while(event_ptr->m_command_exec_status != McEventCommandExecStatus::MC_COMPLETE)
+					std::this_thread::yield();*/
+
+                // block until event task is finished
+				event_ptr->m_future.wait();
+
 
                 runtimeStatusFromAllPrecedingEvents = (McResult)event_ptr->m_runtime_exec_status.load();
                 if (runtimeStatusFromAllPrecedingEvents != McResult::MC_NO_ERROR) {
@@ -714,29 +733,30 @@ void generate_supertriangle_from_mesh_vertices(
     // size (number of bytes) of input floating point type
     const std::size_t flt_size = (have_double ? sizeof(double) : sizeof(float));
     // normalized input normal vector
-    const vec3 n = normalize(vec3(pNormalVector[0], pNormalVector[1], pNormalVector[2]));
+	const vec3_<double> n =
+		normalize(vec3_<double>(pNormalVector[0], pNormalVector[1], pNormalVector[2]));
 
     // minimum projection of mesh vertices along the normal vector
-    double proj_min = 1e10;
+	double proj_min = 1e10;
     // maximum projection of mesh vertices along the normal vector
-    double proj_max = -proj_min;
+	double proj_max = -proj_min;
 
     // mesh bbox extents
-    vec3 bbox_min(1e10);
-    vec3 bbox_max(-1e10);
+	vec3_<double> bbox_min(1e10);
+	vec3_<double> bbox_max(-1e10);
 
-    vec3 mean(0.0);
+    vec3_<double> mean(0.0);
 
     // mesh-vertex with the most-minimum projection onto the normal vector
-    vec3 most_min_vertex_pos;
+	vec3_<double> most_min_vertex_pos;
     // mesh-vertex with the most-maximum projection onto the normal vector
-    vec3 most_max_vertex_pos;
+	vec3_<double> most_max_vertex_pos;
 
     for (uint32_t i = 0; i < numMeshVertices; ++i) { // for each vertex
 
         // input (raw) pointer in bytes
         const McChar* vptr = ((McChar*)pMeshVertices) + (i * flt_size * 3);
-        vec3 coords; // coordinates of current vertex
+		vec3_<double> coords; // coordinates of current vertex
 
         for (uint32_t j = 0; j < 3; ++j) { // for each component
 
@@ -757,7 +777,7 @@ void generate_supertriangle_from_mesh_vertices(
             coords[j] = coord;
         }
         mean = mean + coords;
-        const double dot = dot_product(n, coords);
+		const double dot = dot_product(n, coords);
 
         if (dot < proj_min) {
             most_min_vertex_pos = coords;
@@ -771,50 +791,56 @@ void generate_supertriangle_from_mesh_vertices(
     }
     mean = mean / numMeshVertices;
     // length of bounding box diagonal
-    const double bbox_diag = length(bbox_max - bbox_min);
+	const double bbox_diag = length(bbox_max - bbox_min);
     // length from vertex with most-minimum projection to vertex with most-maximum projection
-    const double max_span = length(most_max_vertex_pos - most_min_vertex_pos);
+	const double max_span = length(most_max_vertex_pos - most_min_vertex_pos);
     // parameter indicating distance along the span from vertex with most-minimum projection to vertex with most-maximum projection
-    const double alpha = clamp(sectionOffset, eps, 1.0 - eps);
+	const double alpha = clamp(sectionOffset, eps, 1.0 - eps);
     // actual distance along the span from vertex with most-minimum projection to vertex with most-maximum projection
-    const double shiftby = (alpha * max_span);
+	const double shiftby = (alpha * max_span);
 
-    const vec3 centroid = most_min_vertex_pos + (n * shiftby);
+    const vec3_<double> centroid = most_min_vertex_pos + (n * shiftby);
 
     // absolute value of the largest component of the normal vector
-    double max_normal_comp_val_abs = -1e10;
+	double max_normal_comp_val_abs = -1e10;
     // index of the largest component of the normal vector
     uint32_t max_normal_comp_idx = 0;
 
     for (uint32_t i = 0; i < 3; ++i) {
 
         const double comp = n[i];
-        const double comp_abs = std::fabs(comp);
-
+//#ifdef MCUT_WITH_ARBITRARY_PRECISION_NUMBERS
+		//const double comp_abs = absolute_value(comp);
+//#else
+		const double comp_abs = std::abs(comp);
+//#endif
         if (comp_abs > max_normal_comp_val_abs) {
             max_normal_comp_idx = i;
             max_normal_comp_val_abs = comp_abs;
         }
     }
 
-    vec3 w(0.0);
+    vec3_<double> w(0.0);
     w[max_normal_comp_idx] = 1.0;
     if (w == n) {
         w[max_normal_comp_idx] = 0.0;
         w[(max_normal_comp_idx + 1) % 3] = 1.0;
     }
 
-    const vec3 u = cross_product(n, w);
-    const vec3 v = cross_product(n, u);
+    const vec3_<double> u = cross_product(n, w);
+	const vec3_<double> v = cross_product(n, u);
 
     const double mean_dot_n = dot_product(mean, n);
-    vec3 mean_on_plane = mean - n * mean_dot_n;
+	vec3_<double> mean_on_plane = mean - n * mean_dot_n;
 
-    vec3 uv_pos = normalize((u + v));
-    vec3 uv_neg = normalize((u - v));
-    vec3 vertex0 = mean_on_plane + uv_pos * (bbox_diag * 2);
-    vec3 vertex1 = mean_on_plane + uv_neg * (bbox_diag * 2);
-    vec3 vertex2 = mean_on_plane - (normalize(uv_pos + uv_neg) * (bbox_diag * 2)); // supertriangle_origin + (u * bbox_diag * 4);
+    vec3_<double> uv_pos = normalize((u + v));
+	vec3_<double> uv_neg = normalize((u - v));
+	vec3_<double> vertex0 = mean_on_plane + uv_pos * (bbox_diag * double(2.0));
+	vec3_<double> vertex1 = mean_on_plane + uv_neg * (bbox_diag * double(2.0));
+	vec3_<double> vertex2 =
+		mean_on_plane -
+				   (normalize(uv_pos + uv_neg) *
+						 (bbox_diag * double(2.0))); // supertriangle_origin + (u * bbox_diag * 4);
 
     supertriangle_vertices.resize(9 * flt_size);
 
@@ -822,7 +848,8 @@ void generate_supertriangle_from_mesh_vertices(
     for (uint32_t i = 0; i < 3; ++i) {
         void* dst = supertriangle_vertices.data() + (counter * flt_size);
         if (have_double) {
-            memcpy(dst, &vertex0[i], flt_size);
+			double tmp = vertex0[i];
+			memcpy(dst, &tmp, flt_size);
         } else {
             float tmp = (float)vertex0[i];
             memcpy(dst, &tmp, flt_size);
@@ -834,9 +861,14 @@ void generate_supertriangle_from_mesh_vertices(
     for (uint32_t i = 0; i < 3; ++i) {
         void* dst = supertriangle_vertices.data() + (counter * flt_size);
         if (have_double) {
-            memcpy(dst, &vertex1[i], flt_size);
+
+			double tmp = (double)vertex1[i];
+
+			memcpy(dst, &tmp, flt_size);
         } else {
+
             float tmp = (float)vertex1[i];
+
             memcpy(dst, &tmp, flt_size);
         }
         counter++;
@@ -846,9 +878,14 @@ void generate_supertriangle_from_mesh_vertices(
     for (uint32_t i = 0; i < 3; ++i) {
         void* dst = supertriangle_vertices.data() + (counter * flt_size);
         if (have_double) {
-            memcpy(dst, &vertex2[i], flt_size);
+
+			double tmp = (double)vertex2[i];
+
+            memcpy(dst, &tmp, flt_size);
         } else {
+
             float tmp = (float)vertex2[i];
+
             memcpy(dst, &tmp, flt_size);
         }
         counter++;
@@ -1006,7 +1043,8 @@ void triangulate_face(
     const uint32_t cc_face_vcount,
     const std::vector<vertex_descriptor_t>& cc_face_vertices,
     const hmesh_t& cc,
-    const fd_t cc_face_iter)
+    const fd_t cc_face_iter,
+    const double multiplier)
 {
     //
     // init vars (which we do not want to be re-inititalizing)
@@ -1017,9 +1055,10 @@ void triangulate_face(
     // NOTE: the elements of this array might be reversed, which occurs
     // when the winding-order/orientation of "cc_face_iter" is flipped
     // due to projection (see call to project_to_2d())
-    std::vector<vec2> cc_face_vcoords2d; // resized by project_to_2d(...)
+    std::vector<vec2_<double>> cc_face_vcoords2d; // resized by project_to_2d(...)
                                          // edge of face, which are used by triangulator as "fixed edges" to
-    // constrain the CDT
+	std::vector<vec2> cc_face_vcoords2d_;
+                                         // constrain the CDT
     std::vector<cdt::edge_t> cc_face_edges;
 
     // used to check that all indices where used in the triangulation.
@@ -1054,26 +1093,56 @@ void triangulate_face(
 
     {
         vec3 cc_face_normal_vector;
-        double cc_face_plane_eq_dparam; //
+		scalar_t cc_face_plane_eq_dparam; //
         const int largest_component_of_normal = compute_polygon_plane_coefficients(
             cc_face_normal_vector,
             cc_face_plane_eq_dparam,
             cc_face_vcoords3d.data(),
-            (int)cc_face_vcount);
+            (int)cc_face_vcount, multiplier);
 
-        project_to_2d(cc_face_vcoords2d, cc_face_vcoords3d, cc_face_normal_vector, largest_component_of_normal);
+        if(squared_length(cc_face_normal_vector) == scalar_t(0.0))
+		{
+			context_uptr->dbg_cb(MC_DEBUG_SOURCE_KERNEL,
+								 MC_DEBUG_TYPE_OTHER,
+								 0,
+								 MC_DEBUG_SEVERITY_HIGH,
+								 "face f" + std::to_string(cc_face_iter) +
+									 " has zero area (applying pseudo triangulation)");
+			auto v0 = cc_face_vertices[0];
+			for(int tv = 1; tv < cc_face_vertices.size()-1; ++tv)
+			{
+				cc_face_triangulation.push_back(0);
+				cc_face_triangulation.push_back(tv);
+				cc_face_triangulation.push_back((tv + 1) % cc_face_vertices.size());
+			}
+			return;
+		}
+
+        project_to_2d(cc_face_vcoords2d_, cc_face_vcoords3d, cc_face_normal_vector, largest_component_of_normal, multiplier);
+
+#ifdef MCUT_WITH_ARBITRARY_PRECISION_NUMBERS
+		for(auto v2d_iter = 0; v2d_iter < cc_face_vcoords2d_.size(); ++v2d_iter)
+		{
+			auto& v = cc_face_vcoords2d_[v2d_iter];
+			auto deq_x = v[0].get_d(); // scalar_t::dequantize(v[0], multiplier);
+			auto deq_y = v[1].get_d(); // scalar_t::dequantize(v[1], multiplier);
+			cc_face_vcoords2d.push_back(vec2_<double>(deq_x, deq_y));
+		}
+#else
+		cc_face_vcoords2d = cc_face_vcoords2d_;
+#endif
 
         //
         // determine the signed area to check if the 2D face polygon
         // is CW (negative) or CCW (positive)
         //
 
-        double signed_area = 0;
+        auto signed_area = 0.;
 
         for (uint32_t i = 0; i < cc_face_vcount - 2; ++i) {
-            vec2 cur = cc_face_vcoords2d[i];
-            vec2 nxt = cc_face_vcoords2d[(i + 1) % cc_face_vcount];
-            vec2 nxtnxt = cc_face_vcoords2d[(i + 2) % cc_face_vcount];
+			auto cur = cc_face_vcoords2d[i];
+			auto nxt = cc_face_vcoords2d[(i + 1) % cc_face_vcount];
+			auto nxtnxt = cc_face_vcoords2d[(i + 2) % cc_face_vcount];
             signed_area += orient2d(cur, nxt, nxtnxt);
         }
 
@@ -1240,11 +1309,12 @@ void triangulate_face(
     //
 
     // Find the duplicates (if any)
-    const cdt::duplicates_info_t duplicates_info_pre = cdt::find_duplicates<double>(
+	const cdt::duplicates_info_t duplicates_info_pre =
+		cdt::find_duplicates<double>(
         cc_face_vcoords2d.cbegin(),
         cc_face_vcoords2d.cend(),
-        cdt::get_x_coord_vec2d<double>,
-        cdt::get_y_coord_vec2d<double>);
+									 cdt::get_x_coord_vec2d<double>,
+									 cdt::get_y_coord_vec2d<double>);
 
     // number of duplicate vertices (if any)
     const uint32_t duplicate_vcount = (uint32_t)duplicates_info_pre.duplicates.size();
@@ -1275,14 +1345,14 @@ void triangulate_face(
             // the other duplicate vertex of pair
             const std::int32_t other_dvertex_id = (std::uint32_t)SAFE_ACCESS(duplicates_info_pre.mapping, perturbed_dvertex_id);
 
-            vec2& perturbed_dvertex_coords = SAFE_ACCESS(cc_face_vcoords2d, perturbed_dvertex_id); // will be modified by shifting/perturbation
-            const vec2& prev_vtx_coords = SAFE_ACCESS(cc_face_vcoords2d, prev_vtx_id);
-            const vec2& next_vtx_coords = SAFE_ACCESS(cc_face_vcoords2d, next_vtx_id);
+            vec2_<double>& perturbed_dvertex_coords = SAFE_ACCESS(cc_face_vcoords2d, perturbed_dvertex_id); // will be modified by shifting/perturbation
+			const vec2_<double>& prev_vtx_coords = SAFE_ACCESS(cc_face_vcoords2d, prev_vtx_id);
+			const vec2_<double>& next_vtx_coords = SAFE_ACCESS(cc_face_vcoords2d, next_vtx_id);
 
             // vector along incident edge, pointing from current to previous vertex (NOTE: clockwise dir, reverse)
-            const vec2 to_prev = prev_vtx_coords - perturbed_dvertex_coords;
+			const vec2_<double> to_prev = prev_vtx_coords - perturbed_dvertex_coords;
             // vector along incident edge, pointing from current to next vertex (NOTE: counter-clockwise dir, normal)
-            const vec2 to_next = next_vtx_coords - perturbed_dvertex_coords;
+			const vec2_<double> to_next = next_vtx_coords - perturbed_dvertex_coords;
 
             //
             // There is a rare case in which MCUT will produce a CC from complete (not partial)! cut where at least
@@ -1306,7 +1376,7 @@ void triangulate_face(
 
             if (have_adjacent_duplicates) {
                 // const bool same_as_prev = std::abs(idx_dist_to_prev)==1;
-                const vec2& shiftby = (same_as_prev) ? to_next : to_prev;
+				const vec2_<double>& shiftby = (same_as_prev) ? to_next : to_prev;
                 // if(same_as_prev)
                 //{
                 //     shiftby = to_next;
@@ -1321,11 +1391,12 @@ void triangulate_face(
                 // positive-value if three points are in CCW order (sign_t::ON_POSITIVE_SIDE)
                 // negative-value if three points are in CW order (sign_t::ON_NEGATIVE_SIDE)
                 // zero if collinear (sign_t::ON_ORIENTED_BOUNDARY)
-                const double orient2d_res = orient2d(perturbed_dvertex_coords, next_vtx_coords, prev_vtx_coords);
+				const double orient2d_res =
+					orient2d(perturbed_dvertex_coords, next_vtx_coords, prev_vtx_coords);
                 const sign_t orient2d_sgn = sign(orient2d_res);
 
                 const double to_prev_sqr_len = squared_length(to_prev);
-                const double to_next_sqr_len = squared_length(to_next);
+				const double to_next_sqr_len = squared_length(to_next);
 
                 //
                 // Now we must determine which side is the perturbation_vector must be
@@ -1346,13 +1417,13 @@ void triangulate_face(
                 // the location represented by perturbed_dvertex_coords) to cause a minute dent due to small
                 // loss of area.
                 // Normalization happens below
-                vec2 perturbation_vector = ((to_prev + to_next) / 2.0) * flip;
+				vec2_<double> perturbation_vector = ((to_prev + to_next) / 2.0) * flip;
 
                 // "orient2d()" is exact in the sense that it can depend on computations with numbers
                 // whose magnitude is lower than the threshold "orient2d_ccwerrboundA". It follows
                 // that this threshold is too "small" a number for us to be able to reliably compute
                 // stuff with the result of "orient2d()" that is near this threshold.
-                const double errbound = 1e-2;
+				const double errbound = 1e-2;
 
                 // We use "errbound", rather than "orient2d_res", to determine if the incident edges
                 // are parallel to give us sufficient room of numerical-precision to reliably compute
@@ -1362,8 +1433,13 @@ void triangulate_face(
                 // (within some threshold) to the edges being parallel, can induce unpredicatable
                 // numerical instabilities, where the mean-vector will be too close to the zero-vector
                 // and can complicate the task of perturbation.
-                const bool incident_edges_are_parallel = std::fabs(orient2d_res) <= std::fabs(errbound);
 
+#if 0//MCUT_WITH_ARBITRARY_PRECISION_NUMBERS // I think this can be made exact (i.e. without "errbound")
+				const bool incident_edges_are_parallel =
+					absolute_value(orient2d_res) <= absolute_value(scalar_t::quantize(errbound, multiplier));
+#else
+                const bool incident_edges_are_parallel = std::fabs(orient2d_res) <= std::fabs(errbound);
+#endif
                 if (incident_edges_are_parallel) {
                     //
                     // pick the shortest of the two incident edges and compute the
@@ -1372,19 +1448,19 @@ void triangulate_face(
                     //
 
                     // flip sign so that the edge is in the CCW dir by pointing from "prev" to "cur"
-                    vec2 edge_vec(-to_prev.x(), -to_prev.y());
+					vec2_<double> edge_vec(-to_prev.x(), -to_prev.y());
 
                     if (to_prev_sqr_len > to_next_sqr_len) {
                         edge_vec = to_next; // pick shortest (NOTE: "to_next" is already in CCW dir)
                     }
 
                     // rotate the selected edge by 90 degrees
-                    const vec2 edge_vec_rotated90(-edge_vec.y(), edge_vec.x());
+					const vec2_<double> edge_vec_rotated90(-edge_vec.y(), edge_vec.x());
 
                     perturbation_vector = edge_vec_rotated90;
                 }
 
-                const vec2 perturbation_dir = normalize(perturbation_vector);
+                const vec2_<double> perturbation_dir = normalize(perturbation_vector);
 
                 //
                 // Compute the maximum length between any two vertices in "cc_face_iter" as the
@@ -1397,11 +1473,11 @@ void triangulate_face(
                 //
 
                 // largest squared length between any two vertices in "cc_face_iter"
-                double largest_sqrd_length = -1.0;
+				double largest_sqrd_length = -1.0;
 
                 for (uint32_t i = 0; i < cc_face_vcount; ++i) {
 
-                    const vec2& a = SAFE_ACCESS(cc_face_vcoords2d, i);
+                    const vec2_<double>& a = SAFE_ACCESS(cc_face_vcoords2d, i);
 
                     for (uint32_t j = 0; j < cc_face_vcount; ++j) {
 
@@ -1409,7 +1485,7 @@ void triangulate_face(
                             continue; // skip -> comparison is redundant
                         }
 
-                        const vec2& b = SAFE_ACCESS(cc_face_vcoords2d, j);
+                        const vec2_<double>& b = SAFE_ACCESS(cc_face_vcoords2d, j);
 
                         const double sqrd_length = squared_length(b - a);
                         largest_sqrd_length = std::max(sqrd_length, largest_sqrd_length);
@@ -1420,16 +1496,21 @@ void triangulate_face(
                 // construct the segment with-which will will find the closest
                 // intersection point from "perturbed_dvertex_coords" to "perturbed_dvertex_coords + perturbation_dir*std::sqrt(largest_sqrd_length)"";
                 //
-
+#if 0//MCUT_WITH_ARBITRARY_PRECISION_NUMBERS
+				const scalar_t shift_len = square_root(largest_sqrd_length, multiplier);
+#else
                 const double shift_len = std::sqrt(largest_sqrd_length);
-                const vec2 shift = perturbation_dir * shift_len;
+#endif
+				const vec2_<double> shift = perturbation_dir * shift_len;
 
-                vec2 intersection_point_on_edge = perturbed_dvertex_coords + shift; // some location potentially outside of polygon
+                vec2_<double> intersection_point_on_edge =
+					perturbed_dvertex_coords +
+					shift; // some location potentially outside of polygon
 
                 {
                     struct {
-                        vec2 start;
-                        vec2 end;
+						vec2_<double> start;
+						vec2_<double> end;
                     } segment;
                     segment.start = perturbed_dvertex_coords;
                     segment.end = perturbed_dvertex_coords + shift;
@@ -1448,14 +1529,78 @@ void triangulate_face(
                             continue; // impossible to properly intersect incident edges
                         }
 
-                        const vec2& edge_start_coords = SAFE_ACCESS(cc_face_vcoords2d, edge_start_idx);
-                        const vec2& edge_end_coords = SAFE_ACCESS(cc_face_vcoords2d, edge_end_idx);
+                        const vec2_<double>& edge_start_coords =
+							SAFE_ACCESS(cc_face_vcoords2d, edge_start_idx);
+						const vec2_<double>& edge_end_coords =
+							SAFE_ACCESS(cc_face_vcoords2d, edge_end_idx);
 
                         double segment_tval; // parameter along segment
-                        double edge_tval; // parameter along current edge
-                        vec2 ipoint; // intersection point between segment and current edge
+						double edge_tval; // parameter along current edge
+						vec2_<double> ipoint; // intersection point between segment and current edge
 
-                        const char result = compute_segment_intersection(
+                        auto compute_segment_intersection_d =
+							[](const vec2_<double>& a,
+							   const vec2_<double>& b,
+							   const vec2_<double>& c,
+							   const vec2_<double>& d,
+							   vec2_<double>& p,
+								double& s,
+								double& t) { // TODO: clean this up later by forwarding args to "compute_segment_intersection"
+								// double s, t; /* The two parameters of the parametric eqns. */
+								double num, denom; /* Numerator and denominator of equations. */
+								char code = '?'; /* Return char characterizing intersection.*/
+
+								denom = a[0] * (d[1] - c[1]) + //
+										b[0] * (c[1] - d[1]) + //
+										d[0] * (b[1] - a[1]) + //
+										c[0] * (a[1] - b[1]);
+
+								/* If denom is zero, then segments are parallel: handle separately. */
+								if(denom == double(0.0))
+								{
+									return Parallellntd(a, b, c, d, p);
+								}
+
+								num = a[0] * (d[1] - c[1]) + //
+									  c[0] * (a[1] - d[1]) + //
+									  d[0] * (c[1] - a[1]);
+
+								if((num == double(0.0)) || (num == denom))
+								{
+									code = 'v';
+								}
+
+								s = num / denom;
+
+								num = -(a[0] * (c[1] - b[1]) + //
+										b[0] * (a[1] - c[1]) + //
+										c[0] * (b[1] - a[1]));
+
+								if((num == double(0.0)) || (num == denom))
+								{
+									code = 'v';
+								}
+
+								t = num / denom;
+
+								if((double(0.0) < s) && (s < double(1.0)) && (double(0.0) < t) &&
+								   (t < double(1.0)))
+								{
+									code = '1';
+								}
+								else if((double(0.0) > s) || (s > double(1.0)) ||
+										(double(0.0) > t) || (t > double(1.0)))
+								{
+									code = '0';
+								}
+
+								p[0] = a[0] + s * (b[0] - a[0]);
+								p[1] = a[1] + s * (b[1] - a[1]);
+
+								return code;
+						};
+
+                        const char result = compute_segment_intersection_d(
                             segment.start, segment.end, edge_start_coords, edge_end_coords,
                             ipoint, segment_tval, edge_tval);
 
@@ -1470,13 +1615,15 @@ void triangulate_face(
                             // pick the closest vertex of edge and compute "segment_tval" as a ratio of vector length
 
                             // length from segment start to the start of edge
-                            const double sqr_dist_to_edge_start = squared_length(edge_start_coords - segment.start);
+							const double sqr_dist_to_edge_start =
+								squared_length(edge_start_coords - segment.start);
                             // length from segment start to the end of edge
-                            const double sqr_dist_to_edge_end = squared_length(edge_end_coords - segment.start);
+							const double sqr_dist_to_edge_end =
+								squared_length(edge_end_coords - segment.start);
 
                             // length from start of segment to either start of edge or end of edge (depending on which is closer)
-                            double sqr_dist_to_closest = sqr_dist_to_edge_start;
-                            const vec2* ipoint_ptr = &edge_start_coords;
+							double sqr_dist_to_closest = sqr_dist_to_edge_start;
+							const vec2_<double>* ipoint_ptr = &edge_start_coords;
 
                             if (sqr_dist_to_edge_start > sqr_dist_to_edge_end) {
                                 sqr_dist_to_closest = sqr_dist_to_edge_end;
@@ -1484,8 +1631,11 @@ void triangulate_face(
                             }
 
                             // ratio along segment
+#if 0//MCUT_WITH_ARBITRARY_PRECISION_NUMBERS
+							segment_tval = square_root(sqr_dist_to_closest, multiplier) / shift_len;
+#else
                             segment_tval = std::sqrt(sqr_dist_to_closest) / shift_len;
-
+#endif
                             if (segment_min_tval > segment_tval) {
                                 segment_min_tval = segment_tval;
                                 intersection_point_on_edge = *ipoint_ptr; // closest point
@@ -1493,17 +1643,23 @@ void triangulate_face(
                         }
                     }
 
-                    MCUT_ASSERT(segment_min_tval <= 1.0); // ... because we started from max length between any two vertices
+                    MCUT_ASSERT(
+						segment_min_tval <=
+						1.); // ... because we started from max length between any two vertices
                 }
 
                 // Shortened perturbation vector: shortening from the vector that is as long as the
                 // max length between any two vertices in "cc_face_iter", to a vector that runs
                 // from "perturbed_dvertex_coords" and upto the boundary-point of the "cc_face_iter", along
                 // "perturbation_vector" and passing through the interior of "cc_face_iter")
-                const vec2 revised_perturbation_vector = (intersection_point_on_edge - perturbed_dvertex_coords);
-                const double revised_perturbation_len = length(revised_perturbation_vector);
-
-                const double scale = (errbound * revised_perturbation_len);
+				const vec2_<double> revised_perturbation_vector =
+					(intersection_point_on_edge - perturbed_dvertex_coords);
+				const double revised_perturbation_len = std::sqrt(squared_length(revised_perturbation_vector));
+#if 0//MCUT_WITH_ARBITRARY_PRECISION_NUMBERS
+                const scalar_t scale = (scalar_t::quantize(errbound,multiplier) * revised_perturbation_len);
+#else
+				const double scale = (errbound * revised_perturbation_len);
+#endif
                 // The translation by which we perturb "perturbed_dvertex_coords"
                 //
                 // NOTE: since "perturbation_vector" was constructed from "to_prev" and "to_next",
@@ -1511,7 +1667,7 @@ void triangulate_face(
                 // the interior of the polygon represented by "cc_face_iter".
                 // Thus, the cases with "orient2d_sgn == sign_t::ON_POSITIVE_SIDE" and
                 // "orient2d_sgn == sign_t::ON_ORIENTED_BOUNDARY", result in the same displacement vector
-                const vec2 displacement = (perturbation_dir * scale);
+				const vec2_<double> displacement = (perturbation_dir * scale);
 
                 // perturb
                 perturbed_dvertex_coords = perturbed_dvertex_coords + displacement;
@@ -1528,12 +1684,13 @@ void triangulate_face(
         cc_face_edges.push_back(cdt::edge_t(i, (i + 1) % cc_face_vcount));
     }
 
+
     // check for duplicate vertices again
-    const cdt::duplicates_info_t duplicates_info_post = cdt::find_duplicates<double>(
-        cc_face_vcoords2d.cbegin(),
-        cc_face_vcoords2d.cend(),
-        cdt::get_x_coord_vec2d<double>,
-        cdt::get_y_coord_vec2d<double>);
+	const cdt::duplicates_info_t duplicates_info_post =
+		cdt::find_duplicates<double>(cc_face_vcoords2d.cbegin(),
+									 cc_face_vcoords2d.cend(),
+									   cdt::get_x_coord_vec2d<double>,
+									   cdt::get_y_coord_vec2d<double>);
 
     if (!duplicates_info_post.duplicates.empty()) {
         // This should not happen! Probably a good idea to email the author
@@ -1545,8 +1702,8 @@ void triangulate_face(
     }
 
     // allocate triangulator
-    cdt::triangulator_t<double> cdt(cdt::vertex_insertion_order_t::AS_GIVEN);
-    cdt.insert_vertices(cc_face_vcoords2d); // potentially perturbed (if duplicates exist)
+	cdt::triangulator_t<double> cdt(cdt::vertex_insertion_order_t::AS_GIVEN);
+	cdt.insert_vertices(cc_face_vcoords2d); // potentially perturbed (if duplicates exist)
     cdt.insert_edges(cc_face_edges);
     cdt.erase_outer_triangles(); // do the constrained delaunay triangulation
 
@@ -1922,7 +2079,16 @@ void get_connected_component_data_impl_detail(
 
                         // for each component of coordinate
                         for (int i = 0; i < 3; ++i) {
-                            const float val = static_cast<float>(coords[i]);
+#ifdef MCUT_WITH_ARBITRARY_PRECISION_NUMBERS
+							
+							const float val = static_cast<float>(scalar_t::dequantize(
+												  coords[i], cc_uptr->multiplier)) +
+											  cc_uptr->srcmesh_cutmesh_com[i] -
+											  cc_uptr->pre_quantization_translation[i];
+#else
+							const float val = static_cast<float>(coords[i]);
+#endif
+                            
                             *(casted_ptr + elem_offset) = val;
                             elem_offset += 1;
                         }
@@ -1999,7 +2165,16 @@ void get_connected_component_data_impl_detail(
 
                         // for each component of coordinate
                         for (int i = 0; i < 3; ++i) {
+#ifdef MCUT_WITH_ARBITRARY_PRECISION_NUMBERS
+							const double val =
+								scalar_t::dequantize(coords[i], cc_uptr->multiplier) +
+								cc_uptr->srcmesh_cutmesh_com[i] -
+								cc_uptr->pre_quantization_translation[i];
+#else
+
                             const double val = static_cast<double>(coords[i]);
+							 
+#endif
                             *(casted_ptr + elem_offset) = val;
                             elem_offset += 1;
                         }
@@ -3395,7 +3570,18 @@ void get_connected_component_data_impl_detail(
 
                             cc_face_triangulation.clear();
 
-                            triangulate_face(cc_face_triangulation, context_ptr, cc_face_vcount, cc_face_vertices, *(cc.get()), *cc_face_iter);
+                            triangulate_face(cc_face_triangulation,
+											 context_ptr,
+											 cc_face_vcount,
+											 cc_face_vertices,
+											 *(cc.get()),
+											 *cc_face_iter,
+#	ifdef MCUT_WITH_ARBITRARY_PRECISION_NUMBERS
+											 cc_uptr->multiplier
+                                #else
+                                1.0
+                            #endif
+                            );
 
                             // NOTE: "cc_face_triangulation" can be empty if the face has near-zero area
 
@@ -3411,11 +3597,11 @@ void get_connected_component_data_impl_detail(
                                     if ((i % 3) == 0) { // every three indices constitute one triangle
                                         // map every CDT triangle in "*cc_face_iter"  to the index value of "*cc_face_iter" (in the user input mesh)
                                         const uint32_t internal_inputmesh_face_idx = (uint32_t)cc_uptr->kernel_hmesh_data->data_maps.face_map[(uint32_t)*cc_face_iter];
-                                        MCUT_ASSERT(internal_inputmesh_face_idx < cc_face_count);
+                                        //MCUT_ASSERT(internal_inputmesh_face_idx < cc_face_count);
                                         const uint32_t user_inputmesh_face_idx = map_internal_inputmesh_face_idx_to_user_inputmesh_face_idx(
                                             internal_inputmesh_face_idx,
                                             cc_uptr);
-                                        MCUT_ASSERT(internal_inputmesh_face_idx < cc_face_count);
+                                        //MCUT_ASSERT(internal_inputmesh_face_idx < cc_face_count);
                                         cdt_face_map_cache_local.push_back(user_inputmesh_face_idx);
                                     }
                                 }

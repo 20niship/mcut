@@ -185,7 +185,7 @@ public:
         // is too slow to reach this function i.e. that an API/context/device thread
         // waits on the condition variable AFTER the client thread calls notify_one()
         std::unique_lock<std::mutex> lock(head_mutex);
-        data_cond.notify_one();
+        data_cond.notify_all();
     }
 
     void notify_one()
@@ -327,9 +327,10 @@ public:
     tasks and waits for the pool threads to finish.
 */
     template <typename FunctionType>
-    std::future<typename std::result_of<FunctionType()>::type> submit(uint32_t worker_thread_id, FunctionType f)
+	std::future<typename std::result_of<FunctionType()>::type> submit(uint32_t worker_thread_id,
+																		  FunctionType f)
     {
-        typedef typename std::result_of<FunctionType()>::type result_type;
+		typedef typename std::result_of<FunctionType()>::type result_type;
 
         std::packaged_task<result_type()> task(std::move(f));
         std::future<result_type> res(task.get_future());

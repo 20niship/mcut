@@ -132,8 +132,8 @@ struct input_t {
     // extracting edge-face intersection pairs
     const std::map<fd_t, std::vector<fd_t>>* ps_face_to_potentially_intersecting_others = nullptr;
 #if defined(USE_OIBVH)
-    const std::vector<bounding_box_t<vec3>>* source_hmesh_face_aabb_array_ptr = nullptr;
-    const std::vector<bounding_box_t<vec3>>* cut_hmesh_face_aabb_array_ptr = nullptr;
+    const std::vector<bounding_box_t<vec3_<double>>>* source_hmesh_face_aabb_array_ptr = nullptr;
+    const std::vector<bounding_box_t<vec3_<double>>>* cut_hmesh_face_aabb_array_ptr = nullptr;
 #else
     BoundingVolumeHierarchy* source_hmesh_BVH;
     BoundingVolumeHierarchy* cut_hmesh_BVH;
@@ -163,12 +163,13 @@ struct input_t {
     bool keep_fragments_sealed_inside = false;
     bool keep_fragments_sealed_outside = false;
     // bool include_fragment_sealed_partial = false; // See: variable above "keep_partially_sealed_connected_components"
-    //bool keep_fragments_sealed_inside_exhaustive = false; // TODO remove
-    //bool keep_fragments_sealed_outside_exhaustive = false; // TODO remove
+    // bool keep_fragments_sealed_inside_exhaustive = false; // TODO remove
+    // bool keep_fragments_sealed_outside_exhaustive = false; // TODO remove
     // NOTE TO SELF: if the user simply wants patches, then kernel should not have to proceed to stitching!!!
 
     bool src_mesh_is_watertight = false;
     bool cut_mesh_is_watertight = false;
+	double multiplier = 1.;
 };
 
 struct output_mesh_data_maps_t {

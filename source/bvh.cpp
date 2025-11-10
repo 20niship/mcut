@@ -41,37 +41,40 @@
 #include <queue>
 
 #ifdef _MSC_VER
-#include <intrin.h>
-#define __builtin_popcount __popcnt
+#	include <intrin.h>
+#	define __builtin_popcount __popcnt
 
 // https://stackoverflow.com/questions/355967/how-to-use-msvc-intrinsics-to-get-the-equivalent-of-this-gcc-code
 unsigned int __inline clz_(unsigned int value)
 {
-    unsigned long leading_zero = 0;
+	unsigned long leading_zero = 0;
 
-    if (_BitScanReverse(&leading_zero, value)) {
-        return 31 - leading_zero;
-    } else {
-        // Same remarks as above
-        return 32;
-    }
+	if(_BitScanReverse(&leading_zero, value))
+	{
+		return 31 - leading_zero;
+	}
+	else
+	{
+		// Same remarks as above
+		return 32;
+	}
 }
 
 #endif
 
 #ifndef CHAR_BIT
-#define CHAR_BIT 8
+#	define CHAR_BIT 8
 #endif
 
 #if defined(USE_OIBVH)
 // count leading zeros in 32 bit bitfield
 unsigned int clz(unsigned int x) // stub
 {
-#ifdef _MSC_VER
-    return clz_(x);
-#else
-    return __builtin_clz(x); // only tested with gcc!!!
-#endif
+#	ifdef _MSC_VER
+	return clz_(x);
+#	else
+	return __builtin_clz(x); // only tested with gcc!!!
+#	endif
 }
 
 // next power of two from x
@@ -218,10 +221,15 @@ void build_oibvh(
     thread_pool& pool,
     #endif
     const hmesh_t& mesh,
-    std::vector<bounding_box_t<vec3>>& bvhAABBs,
+    std::vector<bounding_box_t<vec3_<double>>>& bvhAABBs,
     std::vector<fd_t>& bvhLeafNodeFaces,
-    std::vector<bounding_box_t<vec3>>& face_bboxes,
-    const double& slightEnlargmentEps)
+    std::vector<bounding_box_t<vec3_<double>>>& face_bboxes,
+    const double& slightEnlargmentEps, // in native user coordinates
+    const double 
+    #	ifdef MCUT_WITH_ARBITRARY_PRECISION_NUMBERS
+    multiplier
+#endif
+)
 {
     SCOPED_TIMER(__FUNCTION__);
 
@@ -231,8 +239,8 @@ void build_oibvh(
     // compute mesh-face bounding boxes and their centers
     // ::::::::::::::::::::::::::::::::::::::::::::::::::
 
-    face_bboxes.resize(meshFaceCount); //, bounding_box_t<vec3>());
-    std::vector<vec3> face_bbox_centers(meshFaceCount, vec3());
+    face_bboxes.resize(meshFaceCount); //, bounding_box_t<vec3_<double>>());
+    std::vector<vec3_<double>> face_bbox_centers(meshFaceCount, vec3_<double>());
 #if defined(MCUT_WITH_COMPUTE_HELPER_THREADPOOL)
     {
         auto fn_compute_face_bbox_data = [&](face_array_iterator_t block_start_, face_array_iterator_t block_end_) {
@@ -242,14 +250,25 @@ void build_oibvh(
 
                 // for each vertex on face
                 for (std::vector<vd_t>::const_iterator v = vertices_on_face.cbegin(); v != vertices_on_face.cend(); ++v) {
-                    const vec3 coords = mesh.vertex(*v);
-                    face_bboxes[faceIdx].expand(coords);
+                    const auto& vv = mesh.vertex(*v);
+#		ifdef MCUT_WITH_ARBITRARY_PRECISION_NUMBERS
+                    face_bboxes[faceIdx].expand(
+                        vec3_<double>(
+                        scalar_t::dequantize(vv[0], multiplier),
+                        scalar_t::dequantize(vv[1], multiplier),
+                        scalar_t::dequantize(vv[2], multiplier)
+                    ));
+                    #else
+					face_bboxes[faceIdx].expand(vv);
+                    #endif
                 }
 
-                bounding_box_t<vec3>& bbox = face_bboxes[faceIdx];
+                bounding_box_t<vec3_<double>>& bbox = face_bboxes[faceIdx];
 
-                if (slightEnlargmentEps > double(0.0)) {
-                    bbox.enlarge(slightEnlargmentEps);
+                if(slightEnlargmentEps >
+				   0.0)
+				{
+					bbox.enlarge(slightEnlargmentEps);
                 }
 
                 // calculate bbox center
@@ -272,14 +291,21 @@ void build_oibvh(
 
         // for each vertex on face
         for (std::vector<vd_t>::const_iterator v = vertices_on_face.cbegin(); v != vertices_on_face.cend(); ++v) {
-            const vec3 coords = mesh.vertex(*v);
-            face_bboxes[faceIdx].expand(coords);
+            const auto& vv = mesh.vertex(*v); // NOTE: lives in positive quadrant
+            face_bboxes[faceIdx].expand(
+                vec3_<double>(
+                    scalar_t::dequantize(vv[0], multiplier),
+                    scalar_t::dequantize(vv[1], multiplier),
+                    scalar_t::dequantize(vv[2], multiplier)
+                )
+            );
         }
 
-        bounding_box_t<vec3>& bbox = face_bboxes[faceIdx];
+        bounding_box_t<vec3_<double>>& bbox = face_bboxes[faceIdx];
 
         if (slightEnlargmentEps > double(0.0)) {
-            bbox.enlarge(slightEnlargmentEps);
+            //bbox.enlarge(slightEnlargmentEps);
+			bbox.enlarge(slightEnlargmentEps);
         }
 
         // calculate bbox center
@@ -290,16 +316,21 @@ void build_oibvh(
     // :::::::::::::::::::::::::
 
     bvhAABBs.resize(bvhNodeCount);
-    bounding_box_t<vec3>& meshBbox = bvhAABBs.front(); // root bounding box
+    bounding_box_t<vec3_<double>>& meshBbox = bvhAABBs.front(); // root bounding box
 
 #if defined(MCUT_WITH_COMPUTE_HELPER_THREADPOOL)
     {
+#if 1
         std::mutex bbox_expansion_mtx;
-        auto fn_compute_mesh_bbox = [&](vertex_array_iterator_t block_start_, vertex_array_iterator_t block_end_) {
-            bounding_box_t<vec3> meshBbox_local;
-            for (vertex_array_iterator_t v = block_start_; v != block_end_; ++v) {
-                const vec3& coords = mesh.vertex(*v);
-                meshBbox_local.expand(coords);
+		auto fn_compute_mesh_bbox = [&](std::vector<bounding_box_t<vec3_<double>>>::const_iterator block_start_,
+				std::vector<bounding_box_t<vec3_<double>>>::const_iterator block_end_) {
+            bounding_box_t<vec3_<double>> meshBbox_local;
+				for(std::vector<bounding_box_t<vec3_<double>>>::const_iterator v = block_start_;
+					v != block_end_;
+					++v)
+			{
+                //const vec3_<double>& coords = mesh.vertex(*v);
+				meshBbox_local.expand(*v /*coords*/);
             }
 
             std::lock_guard<std::mutex> lock(bbox_expansion_mtx);
@@ -307,15 +338,31 @@ void build_oibvh(
         };
 
         parallel_for(
-            pool,
-            mesh.vertices_begin(),
-            mesh.vertices_end(),
+            pool, face_bboxes.cbegin()/*mesh.vertices_begin()*/,
+					 face_bboxes.cend()/*mesh.vertices_end()*/,
             fn_compute_mesh_bbox);
+#else
+		std::mutex bbox_expansion_mtx;
+		auto fn_compute_mesh_bbox = [&](vertex_array_iterator_t block_start_,
+										vertex_array_iterator_t block_end_) {
+			bounding_box_t<vec3_<double>> meshBbox_local;
+			for(vertex_array_iterator_t v = block_start_; v != block_end_; ++v)
+			{
+				const vec3_<double>& coords = mesh.vertex(*v);
+				meshBbox_local.expand(coords);
+			}
+
+			std::lock_guard<std::mutex> lock(bbox_expansion_mtx);
+			meshBbox.expand(meshBbox_local);
+		};
+
+		parallel_for(pool, mesh.vertices_begin(), mesh.vertices_end(), fn_compute_mesh_bbox);
+#endif
     }
 #else
     // for each vertex in mesh
     for (vertex_array_iterator_t v = mesh.vertices_begin(); v != mesh.vertices_end(); ++v) {
-        const vec3& coords = mesh.vertex(*v);
+        const vec3_<double>& coords = mesh.vertex(*v);
         meshBbox.expand(coords);
     }
 #endif
@@ -331,15 +378,29 @@ void build_oibvh(
             for (face_array_iterator_t f = block_start_; f != block_end_; ++f) {
                 const uint32_t faceIdx = static_cast<uint32_t>(*f);
 
-                const vec3& face_aabb_centre = SAFE_ACCESS(face_bbox_centers, faceIdx);
-                const vec3 offset = face_aabb_centre - meshBbox.minimum();
-                const vec3 dims = meshBbox.maximum() - meshBbox.minimum();
-
+                const vec3_<double>& face_aabb_centre = SAFE_ACCESS(face_bbox_centers, faceIdx);
+                const vec3_<double> offset = face_aabb_centre - meshBbox.minimum();
+                MCUT_ASSERT(offset[0]>=0);
+                MCUT_ASSERT(offset[1]>=0);
+                MCUT_ASSERT(offset[2]>=0);
+                const vec3_<double> dims = meshBbox.maximum() - meshBbox.minimum();
+#if 0 //MCUT_WITH_ARBITRARY_PRECISION_NUMBERS
+				const auto normalized_x = dims.x() > scalar_t::zero() ? (offset.x() / dims.x()).get_d() : 0.;
+				MCUT_ASSERT(normalized_x >= 0. && normalized_x <= 1.);
+				const auto normalized_y = dims.y() > scalar_t::zero() ? (offset.y() / dims.y()).get_d() : 0.;
+				MCUT_ASSERT(normalized_y >= 0. && normalized_y <= 1.);
+				const auto normalized_z = dims.z() > scalar_t::zero() ? (offset.z() / dims.z()).get_d() : 0.;
+				MCUT_ASSERT(normalized_z >= 0. && normalized_z <= 1.);
+				const unsigned int mortion_code =
+					morton3D(static_cast<float>(normalized_x), // no need to dequantized since value is normalized anyway
+							 static_cast<float>(normalized_y),
+							 static_cast<float>(normalized_z));
+#else
                 const unsigned int mortion_code = morton3D(
                     static_cast<float>(offset.x() / dims.x()),
                     static_cast<float>(offset.y() / dims.y()),
                     static_cast<float>(offset.z() / dims.z()));
-
+#endif
                 const uint32_t idx = (uint32_t)std::distance(mesh.faces_begin(), f); // NOTE: mesh.faces_begin() may not be the actual beginning internally
                 bvhLeafNodeDescriptors[idx].first = *f;
                 bvhLeafNodeDescriptors[idx].second = mortion_code;
@@ -356,9 +417,9 @@ void build_oibvh(
     for (face_array_iterator_t f = mesh.faces_begin(); f != mesh.faces_end(); ++f) {
         const uint32_t faceIdx = static_cast<uint32_t>(*f);
 
-        const vec3& face_aabb_centre = SAFE_ACCESS(face_bbox_centers, faceIdx);
-        const vec3 offset = face_aabb_centre - meshBbox.minimum();
-        const vec3 dims = meshBbox.maximum() - meshBbox.minimum();
+        const vec3_<double>& face_aabb_centre = SAFE_ACCESS(face_bbox_centers, faceIdx);
+        const vec3_<double> offset = face_aabb_centre - meshBbox.minimum();
+        const vec3_<double> dims = meshBbox.maximum() - meshBbox.minimum();
 
         const unsigned int mortion_code = morton3D(
             static_cast<float>(offset.x() / dims.x()),
@@ -401,7 +462,7 @@ void build_oibvh(
                     0,
                     rightmost_real_node_on_leaf_level);
 
-                const bounding_box_t<vec3>& face_bbox = face_bboxes[(uint32_t)it->first];
+                const bounding_box_t<vec3_<double>>& face_bbox = face_bboxes[(uint32_t)it->first];
                 bvhAABBs[memory_idx] = face_bbox;
             }
         };
@@ -426,7 +487,7 @@ void build_oibvh(
             0,
             rightmost_real_node_on_leaf_level);
 
-        const bounding_box_t<vec3>& face_bbox = face_bboxes[(uint32_t)it->first];
+        const bounding_box_t<vec3_<double>>& face_bbox = face_bboxes[(uint32_t)it->first];
         bvhAABBs[memory_idx] = face_bbox;
     }
 #endif
@@ -458,20 +519,20 @@ void build_oibvh(
                     const int leftmost_real_node_on_child_level = get_level_leftmost_node(level_index + 1);
                     const bool right_child_exists = (right_child_implicit_idx <= rightmost_real_node_on_child_level);
 
-                    bounding_box_t<vec3> node_bbox;
+                    bounding_box_t<vec3_<double>> node_bbox;
 
                     if (is_penultimate_level) { // both children are leaves
 
                         const int left_child_index_on_level = left_child_implicit_idx - leftmost_real_node_on_child_level;
                         const fd_t& left_child_face = SAFE_ACCESS(bvhLeafNodeFaces, left_child_index_on_level);
-                        const bounding_box_t<vec3>& left_child_bbox = SAFE_ACCESS(face_bboxes, left_child_face);
+                        const bounding_box_t<vec3_<double>>& left_child_bbox = SAFE_ACCESS(face_bboxes, left_child_face);
 
                         node_bbox.expand(left_child_bbox);
 
                         if (right_child_exists) {
                             const int right_child_index_on_level = right_child_implicit_idx - leftmost_real_node_on_child_level;
                             const fd_t& right_child_face = SAFE_ACCESS(bvhLeafNodeFaces, right_child_index_on_level);
-                            const bounding_box_t<vec3>& right_child_bbox = SAFE_ACCESS(face_bboxes, right_child_face);
+                            const bounding_box_t<vec3_<double>>& right_child_bbox = SAFE_ACCESS(face_bboxes, right_child_face);
                             node_bbox.expand(right_child_bbox);
                         }
                     } else { // remaining internal node levels
@@ -481,7 +542,7 @@ void build_oibvh(
                             leftmost_real_node_on_child_level,
                             0,
                             rightmost_real_node_on_child_level);
-                        const bounding_box_t<vec3>& left_child_bbox = SAFE_ACCESS(bvhAABBs, left_child_memory_idx);
+                        const bounding_box_t<vec3_<double>>& left_child_bbox = SAFE_ACCESS(bvhAABBs, left_child_memory_idx);
 
                         node_bbox.expand(left_child_bbox);
 
@@ -491,7 +552,7 @@ void build_oibvh(
                                 leftmost_real_node_on_child_level,
                                 0,
                                 rightmost_real_node_on_child_level);
-                            const bounding_box_t<vec3>& right_child_bbox = SAFE_ACCESS(bvhAABBs, right_child_memory_idx);
+                            const bounding_box_t<vec3_<double>>& right_child_bbox = SAFE_ACCESS(bvhAABBs, right_child_memory_idx);
                             node_bbox.expand(right_child_bbox);
                         }
                     }
@@ -524,20 +585,20 @@ void build_oibvh(
             const int leftmost_real_node_on_child_level = get_level_leftmost_node(level_index + 1);
             const bool right_child_exists = (right_child_implicit_idx <= rightmost_real_node_on_child_level);
 
-            bounding_box_t<vec3> node_bbox;
+            bounding_box_t<vec3_<double>> node_bbox;
 
             if (is_penultimate_level) { // both children are leaves
 
                 const int left_child_index_on_level = left_child_implicit_idx - leftmost_real_node_on_child_level;
                 const fd_t& left_child_face = SAFE_ACCESS(bvhLeafNodeFaces, left_child_index_on_level);
-                const bounding_box_t<vec3>& left_child_bbox = SAFE_ACCESS(face_bboxes, left_child_face);
+                const bounding_box_t<vec3_<double>>& left_child_bbox = SAFE_ACCESS(face_bboxes, left_child_face);
 
                 node_bbox.expand(left_child_bbox);
 
                 if (right_child_exists) {
                     const int right_child_index_on_level = right_child_implicit_idx - leftmost_real_node_on_child_level;
                     const fd_t& right_child_face = SAFE_ACCESS(bvhLeafNodeFaces, right_child_index_on_level);
-                    const bounding_box_t<vec3>& right_child_bbox = SAFE_ACCESS(face_bboxes, right_child_face);
+                    const bounding_box_t<vec3_<double>>& right_child_bbox = SAFE_ACCESS(face_bboxes, right_child_face);
                     node_bbox.expand(right_child_bbox);
                 }
             } else { // remaining internal node levels
@@ -547,7 +608,7 @@ void build_oibvh(
                     leftmost_real_node_on_child_level,
                     0,
                     rightmost_real_node_on_child_level);
-                const bounding_box_t<vec3>& left_child_bbox = SAFE_ACCESS(bvhAABBs, left_child_memory_idx);
+                const bounding_box_t<vec3_<double>>& left_child_bbox = SAFE_ACCESS(bvhAABBs, left_child_memory_idx);
 
                 node_bbox.expand(left_child_bbox);
 
@@ -557,7 +618,7 @@ void build_oibvh(
                         leftmost_real_node_on_child_level,
                         0,
                         rightmost_real_node_on_child_level);
-                    const bounding_box_t<vec3>& right_child_bbox = SAFE_ACCESS(bvhAABBs, right_child_memory_idx);
+                    const bounding_box_t<vec3_<double>>& right_child_bbox = SAFE_ACCESS(bvhAABBs, right_child_memory_idx);
                     node_bbox.expand(right_child_bbox);
                 }
             }
@@ -576,9 +637,9 @@ void build_oibvh(
 
 void intersectOIBVHs(
     std::map<fd_t, std::vector<fd_t>>& ps_face_to_potentially_intersecting_others,
-    const std::vector<bounding_box_t<vec3>>& srcMeshBvhAABBs,
+    const std::vector<bounding_box_t<vec3_<double>>>& srcMeshBvhAABBs,
     const std::vector<fd_t>& srcMeshBvhLeafNodeFaces,
-    const std::vector<bounding_box_t<vec3>>& cutMeshBvhAABBs,
+    const std::vector<bounding_box_t<vec3_<double>>>& cutMeshBvhAABBs,
     const std::vector<fd_t>& cutMeshBvhLeafNodeFaces)
 {
     TIMESTACK_PUSH(__FUNCTION__);
@@ -600,8 +661,8 @@ void intersectOIBVHs(
     do {
         node_pair_t ct_front_node = traversalQueue.front();
 
-        bounding_box_t<vec3> sm_bvh_node_bbox;
-        bounding_box_t<vec3> cs_bvh_node_bbox;
+        bounding_box_t<vec3_<double>> sm_bvh_node_bbox;
+        bounding_box_t<vec3_<double>> cs_bvh_node_bbox;
 
         // sm
         const int sm_bvh_node_implicit_idx = ct_front_node.m_left;
@@ -763,10 +824,10 @@ void BoundingVolumeHierarchy::buildTree(const hmesh_t& mesh_,
 
         const std::vector<vd_t> vertices_on_face = mesh->get_vertices_around_face(*f);
 
-        bounding_box_t<vec3> bbox;
+        bounding_box_t<vec3_<double>> bbox;
         // for each vertex on face
         for (std::vector<vd_t>::const_iterator v = vertices_on_face.cbegin(); v != vertices_on_face.cend(); ++v) {
-            const vec3 coords = mesh->vertex(*v);
+            const vec3_<double> coords = mesh->vertex(*v);
             bbox.expand(coords);
         }
 

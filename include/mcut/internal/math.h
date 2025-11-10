@@ -46,6 +46,172 @@
 
 #include "mcut/internal/utils.h"
 
+// Shewchuk predicates : shewchuk.c
+extern "C"
+{
+	// void exactinit();
+	double orient2d(const double* pa, const double* pb, const double* pc);
+	double orient3d(const double* pa, const double* pb, const double* pc, const double* pd);
+	double orient3dfast(const double* pa, const double* pb, const double* pc, const double* pd);
+	double incircle(const double* pa, const double* pb, const double* pc, const double* pd);
+	double insphere(
+		const double* pa, const double* pb, const double* pc, const double* pd, const double* pe);
+}
+
+#ifdef MCUT_WITH_ARBITRARY_PRECISION_NUMBERS
+
+#include "nfg/numerics.h" // Indirect_Predicates
+
+class rational_number : public bigrational
+{
+public:
+	rational_number()
+		: bigrational(bigfloat(0.0))
+	{ }
+
+	rational_number(double val)
+		: bigrational(bigfloat(val))
+	{ }
+
+	rational_number(bigrational val)
+		: bigrational(val)
+	{ }
+
+	virtual ~rational_number() { }
+
+    inline static rational_number zero() 
+	{
+		return rational_number(0.0);
+	}
+
+    inline static rational_number one() 
+	{
+		return rational_number(1.0);
+	}
+
+	explicit operator double() const
+	{
+		return this->get_d();
+	}
+
+    //
+    // some operators that are not defined in "bigrational" class
+    //
+
+	rational_number& operator-=(const rational_number& rhs)
+	{
+		auto x = *this - rhs;
+		*this = x;
+		return *this;
+	}
+
+	rational_number& operator+=(const rational_number& rhs)
+	{
+		auto x = *this + rhs;
+		*this = x;
+		return *this;
+	}
+
+	rational_number& operator*=(const rational_number& rhs)
+	{
+		auto x = *this * rhs;
+		*this = x;
+		return *this;
+	}
+
+	rational_number& operator/=(const rational_number& rhs)
+	{
+		auto x = *this / rhs;
+		*this = x;
+		return *this;
+	}
+
+	bool operator<(const rational_number& r) const
+	{
+		return bigrational::operator<(r);
+	}
+
+    //
+    // static member functions
+    //
+
+	static rational_number abs(rational_number _a)
+	{
+		if(_a < rational_number::zero())
+		{
+			auto copy = _a;
+			copy.negate();
+			return copy;
+		}
+
+		return _a;
+	}
+
+	static rational_number min(rational_number _a, rational_number _b)
+	{
+		return _a <= _b ? _a : _b;
+	}
+
+	static rational_number max(rational_number _a, rational_number _b)
+	{
+		return _a > _b ? _a : _b;
+	}
+
+	static rational_number clamp(rational_number n, rational_number lower, rational_number upper)
+	{
+		return rational_number::max(lower, rational_number::min(n, upper));
+	}
+
+    static rational_number quantize(const double& d /*double prec value*/,
+									   const double& m /*multiplier*/)
+	{
+		MCUT_ASSERT(std::abs(d)<=m);
+		MCUT_ASSERT(m != 0);
+
+		if(d == 0)
+		{
+			return rational_number::zero();
+        }
+		
+        //  map all into normalized range [-1, 1]^3.
+		const auto n = d / m;
+		// remap into integer range [-2^26, 2^26]^3.
+		const auto i = int(n * (1 << 26));
+		const rational_number result(i);
+		return result;
+	}
+
+	static double dequantize(const rational_number& i /*rational*/,
+								 const double& m /*multiplier*/)
+	{
+		if(i == rational_number::zero())
+		{
+			return (0.0);
+		}
+		//std::cout << i << std::endl;
+		// from integer range [-2^26, 2^26]^3 to normalized range [-1, 1]^3
+		MCUT_ASSERT(i <= rational_number(1 << 26));
+		const auto n = i / rational_number(1 << 26);
+		//std::cout << n.get_dec_str() << std::endl;
+		//auto nv = n.get_d();
+		// from normalized range [-1, 1]^3 to actual/user coord value
+		const auto d = n * rational_number(m);
+		const double result = d.get_d(); // NOTE: truncated
+
+        MCUT_ASSERT(result <= m);
+
+		return result;
+	}
+};
+
+typedef rational_number scalar_t;
+#else
+typedef double scalar_t;
+
+
+
+#endif // MCUT_WITH_ARBITRARY_PRECISION_NUMBERS
+
 enum sign_t {
     ON_NEGATIVE_SIDE = -1, // left
     ON_ORIENTED_BOUNDARY = 0, // on boundary
@@ -56,7 +222,7 @@ enum sign_t {
     POSITIVE = ON_POSITIVE_SIDE,
 };
 
-template <typename T = double>
+template <typename T = scalar_t>
 class vec2_ {
 public:
     typedef T element_type;
@@ -166,7 +332,7 @@ protected:
 
 typedef vec2_<> vec2;
 
-template <typename T = double>
+template <typename T = scalar_t>
 class vec3_ : public vec2_<T> {
 public:
     vec3_()
@@ -244,13 +410,17 @@ public:
         return m_z;
     }
 
+    T& z() 	{
+		return m_z;
+	}
+
 protected:
     T m_z;
 }; // vec3_
 
 typedef vec3_<> vec3;
 
-template <typename T = int>
+template <typename T = scalar_t>
 class matrix_t {
 public:
     matrix_t()
@@ -292,7 +462,7 @@ public:
         return result;
     }
 
-    matrix_t<T> operator*(const double& s) const
+    matrix_t<T> operator*(const scalar_t& s) const
     {
         matrix_t<T> result(m_rows, m_cols);
 
@@ -305,7 +475,7 @@ public:
         return result;
     }
 
-    matrix_t<T> operator/(const double& s) const
+    matrix_t<T> operator/(const scalar_t& s) const
     {
         matrix_t<T> result(m_rows, m_cols);
 
@@ -338,7 +508,7 @@ public:
     vec2 operator*(const vec3& v) const
     {
         MCUT_ASSERT(this->cols() == vec3::cardinality());
-        vec2 result(double(0.0));
+        vec2 result(scalar_t(0.0));
         MCUT_ASSERT(this->rows() == vec2::cardinality());
 
         for (int col = 0; col < this->cols(); ++col) {
@@ -378,9 +548,30 @@ private:
     std::vector<T> m_entries;
 };
 
-extern double square_root(const double& number);
-extern double absolute_value(const double& number);
-extern sign_t sign(const double& number);
+template <typename T >
+T square_root(const T& number, double multiplier = 1)
+{
+#if !defined(MCUT_WITH_ARBITRARY_PRECISION_NUMBERS)
+		return std::sqrt(number);
+#else
+	const double dequantized = scalar_t::dequantize(
+		number, multiplier); // to native user coordinates/from rational coordinates
+	
+	const double sqrt_val = std::sqrt(dequantized);
+	const scalar_t quantized =
+		scalar_t::quantize(sqrt_val, multiplier); // to rational coordinates
+	return quantized;
+#endif // #if !defined(MCUT_WITH_ARBITRARY_PRECISION_NUMBERS)
+}
+
+template <>
+inline double square_root(const double& x, double)
+{
+	return std::sqrt(x);
+}
+
+extern scalar_t absolute_value(const scalar_t& number);
+extern sign_t sign(const scalar_t& number);
 extern std::ostream& operator<<(std::ostream& os, const vec3& v);
 
 template <typename U>
@@ -432,12 +623,18 @@ vec3_<T> compwise_max(const vec3_<T>& a, const vec3_<T>& b)
     return vec3_<T>(max(a.x(), b.x()), max(a.y(), b.y()), max(a.z(), b.z()));
 }
 
-extern vec3 cross_product(const vec3& a, const vec3& b);
+template <typename vector_type>
+vector_type cross_product(const vector_type& a, const vector_type& b)
+{ 
+    return vector_type( a.y() * b.z() - a.z() * b.y(),
+				        a.z() * b.x() - a.x() * b.z(),
+				        a.x() * b.y() - a.y() * b.x());
+}
 
 template <typename vector_type>
-double dot_product(const vector_type& a, const vector_type& b)
+typename vector_type::element_type dot_product(const vector_type& a, const vector_type& b)
 {
-    double out(0.0);
+	typename vector_type::element_type out(0.0);
     for (int i = 0; i < vector_type::cardinality(); ++i) {
         out += (a[i] * b[i]);
     }
@@ -478,31 +675,61 @@ matrix_t<typename vector_type::element_type> outer_product(const vector_type& a,
 }
 
 template <typename vector_type>
-double squared_length(const vector_type& v)
+typename vector_type::element_type squared_length(const vector_type& v)
 {
     return dot_product(v, v);
 }
-
+#	if MCUT_WITH_ARBITRARY_PRECISION_NUMBERS
 template <typename vector_type>
-double length(const vector_type& v)
+typename vector_type::element_type length(const vector_type& v, double multiplier = 1.0)
 {
-    return square_root(squared_length(v));
+	MCUT_ASSERT(false);
+    typename vector_type::element_type foo;
+	return foo; // no-op
+}
+template <>
+inline scalar_t length(const vec3_<scalar_t>& v, double /*multiplier*/)
+{
+	return std::sqrt(squared_length(v).get_d());
+	//square_root(squared_length(v).get_d(), multiplier);
 }
 
-template <typename vector_type>
-vector_type normalize(const vector_type& v)
+template <>
+inline double length(const vec2_<double>& v, double multiplier)
 {
-    return v / length(v);
+	return square_root(squared_length(v), multiplier);
 }
 
-double orient2d(const vec2& pa, const vec2& pb, const vec2& pc);
-double orient3d(const vec3& pa, const vec3& pb, const vec3& pc,
+template <>
+inline double length(const vec3_<double>& v, double multiplier)
+{
+	return square_root(squared_length(v), multiplier);
+}
+
+#else
+template <typename vector_type>
+typename vector_type::element_type length(const vector_type& v, double multiplier = 1.0)
+{
+	return square_root(squared_length(v), multiplier);
+}
+#endif
+
+template <typename vector_type>
+vector_type normalize(const vector_type& v, double multiplier = 1.0)
+{
+	return v / length(v, multiplier);
+}
+
+scalar_t orient2d(const vec2& pa, const vec2& pb, const vec2& pc);
+scalar_t orient3d(const vec3& pa, const vec3& pb, const vec3& pc,
     const vec3& pd);
 
 // Compute a polygon's plane coefficients (i.e. normal and d parameters).
 // The computed normal is not normalized. This function returns the largest component of the normal.
-int compute_polygon_plane_coefficients(vec3& normal, double& d_coeff,
-    const vec3* polygon_vertices, const int polygon_vertex_count);
+int compute_polygon_plane_coefficients(vec3& normal, scalar_t& d_coeff,
+									   const vec3* polygon_vertices,
+									   const int polygon_vertex_count,
+									   const double multiplier);
 
 // Compute the intersection point between a line (not a segment) and a plane defined by a polygon.
 //
@@ -533,7 +760,7 @@ char compute_line_plane_intersection(vec3& p, // intersection point
 // 'r' : The(second) r endpoint is on the plane (but not 'p').
 // '0' : The segment lies strictly to one side or the other of the plane.
 // '1': The segment intersects the plane, and none of {p, q, r} hold.
-char compute_segment_plane_intersection(vec3& p, const vec3& normal, const double& d_coeff,
+char compute_segment_plane_intersection(vec3& p, const vec3& normal, const scalar_t& d_coeff,
     const vec3& q, const vec3& r);
 
 // Similar to "compute_segment_plane_intersection" but simply checks the [type] of intersection using
@@ -547,7 +774,9 @@ char compute_segment_plane_intersection(vec3& p, const vec3& normal, const doubl
 // '1': The segment intersects the plane, and none of {p, q, r} hold.
 char compute_segment_plane_intersection_type(const vec3& q, const vec3& r,
     const std::vector<vec3>& polygon_vertices,
-    const vec3& polygon_normal, const int polygon_normal_largest_component);
+											 const vec3& polygon_normal,
+											 const int polygon_normal_largest_component,
+											 const double multiplier);
 
 // Test if a point 'q' (in 2D) lies inside or outside a given polygon (count the number ray crossings).
 //
@@ -556,7 +785,8 @@ char compute_segment_plane_intersection_type(const vec3& q, const vec3& r,
 // 'o': q is strictly exterior (outside).
 // 'e': q is on an edge, but not an endpoint.
 // 'v': q is a vertex.
-char compute_point_in_polygon_test(const vec2& q, const std::vector<vec2>& polygon_vertices);
+char compute_point_in_polygon_test(const vec2& q,
+								   const std::vector<vec2>& polygon_vertices);
 
 // Test if a point 'q' (in 3D) lies inside or outside a given polygon (count the number ray crossings).
 //
@@ -566,21 +796,52 @@ char compute_point_in_polygon_test(const vec2& q, const std::vector<vec2>& polyg
 // 'e': q is on an edge, but not an endpoint.
 // 'v': q is a vertex.
 char compute_point_in_polygon_test(const vec3& p, const std::vector<vec3>& polygon_vertices,
-    const vec3& polygon_normal, const int polygon_normal_largest_component);
+    const vec3& polygon_normal, const int polygon_normal_largest_component, const double multiplier);
 
 // project a 3d polygon to 3d by eliminating the largest component of its normal
 void project_to_2d(std::vector<vec2>& out, const std::vector<vec3>& polygon_vertices,
-    const vec3& polygon_normal, const int polygon_normal_largest_component);
+				   const vec3& polygon_normal,
+				   const int polygon_normal_largest_component,
+				   const double multiplier);
 
-void project_to_2d(std::vector<vec2>& out, const std::vector<vec3>& polygon_vertices,
-    const vec3& polygon_normal);
+//void project_to_2d(std::vector<vec2>& out, const std::vector<vec3>& polygon_vertices,
+//				   const vec3& polygon_normal,
+//				   const double multiplier);
 
 bool coplaner(const vec3& pa, const vec3& pb, const vec3& pc,
     const vec3& pd);
 
-bool collinear(const vec2& a, const vec2& b, const vec2& c, double& predResult);
+#	ifdef MCUT_WITH_ARBITRARY_PRECISION_NUMBERS
+static bool collinear(const vec2_<double>& a,
+			   const vec2_<double>& b,
+			   const vec2_<double>& c,
+			   double& predResult)
+{
+#ifdef MCUT_WITH_ARBITRARY_PRECISION_NUMBERS
+	const double pa_[2] = {a.x(), a.y()};
+	const double pb_[2] = {b.x(), b.y()};
+	const double pc_[2] = {c.x(), c.y()};
+
+	predResult = ::orient2d(pa_, pb_, pc_); // shewchuk predicate
+    #else
+	predResult = orient2d(a, b, c);
+    #endif
+
+	return predResult == double(0.);
+}
+#endif
+
+
+bool collinear(const vec2& a, const vec2& b, const vec2& c, scalar_t& predResult);
 
 bool collinear(const vec2& a, const vec2& b, const vec2& c);
+
+
+char Parallellntd(const vec2_<double>& a,
+				 const vec2_<double>& b,
+				 const vec2_<double>& c,
+				 const vec2_<double>& d,
+				 vec2_<double>& p);
 
 /*
 Compute the intersection of two line segments. Can also be used to calculate where the respective lines intersect.
@@ -600,7 +861,7 @@ Return values:
 '0': The segments do not intersect (i.e., they share no points); '0' stands for FALSE
 */
 char compute_segment_intersection(const vec2& a, const vec2& b, const vec2& c, const vec2& d,
-    vec2& p, double& s, double& t);
+    vec2& p, scalar_t& s, scalar_t& t);
 
 template <typename vector_type>
 struct bounding_box_t {
@@ -695,14 +956,44 @@ void make_bbox(bounding_box_t<vector_type>& bbox, const vector_type* vertices, c
     }
 }
 
-// Shewchuk predicates : shewchuk.c
-extern "C" {
-// void exactinit();
-double orient2d(const double* pa, const double* pb, const double* pc);
-double orient3d(const double* pa, const double* pb, const double* pc, const double* pd);
-double orient3dfast(const double* pa, const double* pb, const double* pc, const double* pd);
-double incircle(const double* pa, const double* pb, const double* pc, const double* pd);
-double insphere(const double* pa, const double* pb, const double* pc, const double* pd, const double* pe);
+
+#ifdef MCUT_WITH_ARBITRARY_PRECISION_NUMBERS
+static scalar_t orient2d(const scalar_t* pa, const scalar_t* pb, const scalar_t* pc)
+{
+	auto acx = pa[0] - pc[0];
+	auto bcx = pb[0] - pc[0];
+	auto acy = pa[1] - pc[1];
+	auto bcy = pb[1] - pc[1];
+
+	return acx * bcy - acy * bcx;
 }
+static scalar_t
+orient3d(const scalar_t* pa, const scalar_t* pb, const scalar_t* pc, const scalar_t* pd)
+{
+	auto adx = pa[0] - pd[0];
+	auto bdx = pb[0] - pd[0];
+	auto cdx = pc[0] - pd[0];
+	auto ady = pa[1] - pd[1];
+	auto bdy = pb[1] - pd[1];
+	auto cdy = pc[1] - pd[1];
+	auto adz = pa[2] - pd[2];
+	auto bdz = pb[2] - pd[2];
+	auto cdz = pc[2] - pd[2];
+
+	return adx * (bdy * cdz - bdz * cdy) + bdx * (cdy * adz - cdz * ady) +
+		   cdx * (ady * bdz - adz * bdy);
+}
+
+static double orient2d(const vec2_<double>& pa, const vec2_<double>& pb, const vec2_<double>& pc)
+{
+	const double pa_[2] = {pa.x(), pa.y()};
+	const double pb_[2] = {pb.x(), pb.y()};
+	const double pc_[2] = {pc.x(), pc.y()};
+
+	return ::orient2d(pa_, pb_, pc_); // shewchuk predicate
+}
+#endif
+
+
 
 #endif // MCUT_MATH_H_

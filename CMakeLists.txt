@@ -7,6 +7,7 @@
 #	MCUT_BUILD_TUTORIALS [default=OFF] - Build tutorials
 #	MCUT_BUILD_WITH_COMPUTE_HELPER_THREADPOOL [default=ON] - Build as configurable multi-threaded library
 #   MCUT_BUILD_WITH_API_EVENT_LOGGING [default=OFF] - Build with logging functionality which dumps event creation and destruction notices to the console
+#   MCUT_WITH_ARBITRARY_PRECISION_NUMBERS [default=OFF] - Build with rational arithmetic calculations for resolving intersections.
 #
 # This script will define the following CMake cache variables:
 #
@@ -84,6 +85,13 @@ endif()
 
 include(CMakePrintHelpers) 
 
+# FetchContent added in CMake 3.11, downloads during the configure step
+include(FetchContent)
+# FetchContent_MakeAvailable was not added until CMake 3.14; use our shim
+if(${CMAKE_VERSION} VERSION_LESS 3.14)
+	include(cmake/add_FetchContent_MakeAvailable.cmake)
+endif()
+
 #
 # User options
 #
@@ -97,7 +105,7 @@ if (MCUT_TOPLEVEL_PROJECT AND NOT MCUT_BUILD_TUTORIALS)
 	option(MCUT_BUILD_TUTORIALS "Configure to build MCUT tutorials" ON)
 endif()
 option(MCUT_BUILD_WITH_API_EVENT_LOGGING "Configure to build MCUT with event logging to console" OFF)
-
+option(MCUT_WITH_ARBITRARY_PRECISION_NUMBERS "Configure to build with arbitrary precision numbers" OFF) 
 #
 # machine-precision-numbers library targets
 #
@@ -115,6 +123,9 @@ list(APPEND compilation_flags "")
 if(MCUT_BUILD_AS_SHARED_LIB)
 	list(APPEND preprocessor_defs -DMCUT_SHARED_LIB=1)
 endif()
+if(MCUT_WITH_ARBITRARY_PRECISION_NUMBERS)
+	list(APPEND preprocessor_defs -DMCUT_WITH_ARBITRARY_PRECISION_NUMBERS=1)
+endif()
 
 find_package(Threads REQUIRED)
 
@@ -130,11 +141,11 @@ endif()
 
 
 if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR "${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
-	list(APPEND compilation_flags -Wall -Wextra)
+	list(APPEND compilation_flags -Wall -Wextra -frounding-math)
 elseif ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Intel")
 	list(APPEND compilation_flags w3 -diag-disable:remark)
 elseif ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
-	list(APPEND compilation_flags /W4 /wd26812 /bigobj)
+	list(APPEND compilation_flags /W4 /wd26812 /bigobj /fp:strict)
 	list(APPEND preprocessor_defs -D_CRT_SECURE_NO_WARNINGS)
 endif()
 
@@ -197,18 +208,15 @@ endif()
 set (MCUT_LIB_PATH $<TARGET_FILE:mcut>  CACHE STRING "Path to the compiled MCUT library file")
 message(STATUS "[MCUT] MCUT_LIB_PATH=${MCUT_LIB_PATH}")
 
+
+
 #
 # tests, tutorials etc. are dependant on third-party libs (file loaders etc.)
 # We enable the code that is used to download those projects here:
 #
 if(${MCUT_BUILD_TESTS} OR ${MCUT_BUILD_TUTORIALS})
 
-	# FetchContent added in CMake 3.11, downloads during the configure step
-	include(FetchContent)
-	# FetchContent_MakeAvailable was not added until CMake 3.14; use our shim
-	if(${CMAKE_VERSION} VERSION_LESS 3.14)
-		include(cmake/add_FetchContent_MakeAvailable.cmake)
-	endif()
+	
 
 	FetchContent_Populate(
 		mio

@@ -309,7 +309,7 @@ public:
 
     vertex_descriptor_t add_vertex(const vec3& point);
 
-    vertex_descriptor_t add_vertex(const double& x, const double& y, const double& z);
+    vertex_descriptor_t add_vertex(const scalar_t& x, const scalar_t& y, const scalar_t& z);
     // adds an edges into the mesh data structure, creating incident halfedges, and returns the
     // halfedge whole target is "v1"
     halfedge_descriptor_t add_edge(const vertex_descriptor_t v0, const vertex_descriptor_t v1);
@@ -455,7 +455,7 @@ typedef halfedge_descriptor_t hd_t;
 typedef edge_descriptor_t ed_t;
 typedef face_descriptor_t fd_t;
 
-void write_off(const char* fpath, const hmesh_t& mesh);
+void write_off(const char* fpath, const hmesh_t& mesh, const double multiplier);
 void read_off(hmesh_t& mesh, const char* fpath);
 
 template <typename V = face_array_t>

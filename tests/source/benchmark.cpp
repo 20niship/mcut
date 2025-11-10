@@ -94,6 +94,7 @@ UTEST_I_SETUP(Benchmark)
 UTEST_I_TEARDOWN(Benchmark)
 {
     if (utest_index < NUMBER_OF_BENCHMARKS) {
+		EXPECT_EQ(mcReleaseConnectedComponents(utest_fixture->myContext,0, NULL), MC_NO_ERROR);
         EXPECT_EQ(mcReleaseContext(utest_fixture->myContext), MC_NO_ERROR);
     }
 
@@ -103,6 +104,11 @@ UTEST_I_TEARDOWN(Benchmark)
 
 UTEST_I(Benchmark, inputID, NUMBER_OF_BENCHMARKS)
 {
+	/*if(utest_fixture->benchmarkIndex == 42 || utest_fixture->benchmarkIndex == 42)
+    {
+		return;
+    }*/
+
     std::vector<std::pair<std::string, std::string>> benchmarkMeshPairs;
 
     std::stringstream ss;
@@ -138,6 +144,7 @@ UTEST_I(Benchmark, inputID, NUMBER_OF_BENCHMARKS)
                     &utest_fixture->cutMesh.numVertices,
                     &utest_fixture->cutMesh.numFaces);
 
+        
         //
         // do the cutting
         // 

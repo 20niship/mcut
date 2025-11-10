@@ -46,6 +46,19 @@
 #pragma warning(disable : 26812)
 #endif
 
+
+std::once_flag initFPU_flag;
+
+void thread_init_floating_point_unit()
+{
+#ifdef MCUT_WITH_ARBITRARY_PRECISION_NUMBERS
+	std::call_once(initFPU_flag, []() {
+		//std::cout << "Calling 'initFPU()'\n";
+		initFPU();
+	});
+    #endif
+}
+
 MCAPI_ATTR McResult MCAPI_CALL mcCreateContext(McContext* pOutContext, McFlags contextFlags)
 {
     McResult return_value = McResult::MC_NO_ERROR;
@@ -66,6 +79,8 @@ MCAPI_ATTR McResult MCAPI_CALL mcCreateContext(McContext* pOutContext, McFlags c
     if (return_value != McResult::MC_NO_ERROR) {
         std::fprintf(stderr, "%s(...) -> %s\n", __FUNCTION__, per_thread_api_log_str.c_str());
     }
+
+    thread_init_floating_point_unit();
 
     return return_value;
 }

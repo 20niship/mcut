@@ -96,8 +96,10 @@ face_array_iterator_t face_array_iterator_t::cend(id_<face_array_iterator_t>)
 
 hmesh_t::hmesh_t()
 {
+    
 }
-hmesh_t::~hmesh_t() { }
+hmesh_t::~hmesh_t() { 
+}
 
 // static member functions
 // -----------------------
@@ -360,13 +362,14 @@ edge_descriptor_t hmesh_t::edge(const vertex_descriptor_t s, const vertex_descri
 
 vertex_descriptor_t hmesh_t::add_vertex(const vec3& point)
 {
-    const double& x = point.x();
-    const double& y = point.y();
-    const double& z = point.z();
+    const auto& x = point.x();
+	const auto& y = point.y();
+	const auto& z = point.z();
+
     return add_vertex(x, y, z);
 }
 
-vertex_descriptor_t hmesh_t::add_vertex(const double& x, const double& y, const double& z)
+vertex_descriptor_t hmesh_t::add_vertex(const scalar_t& x, const scalar_t& y, const scalar_t& z)
 {
     vertex_descriptor_t vd = hmesh_t::null_vertex();
     vertex_data_t* data_ptr = nullptr;
@@ -1262,7 +1265,11 @@ const face_array_iterator_t hmesh_t::elements_begin_(id_<array_iterator_t<face_a
     return faces_begin(account_for_removed_elems);
 }
 
-void write_off(const char* fpath, const hmesh_t& mesh)
+void write_off(const char* fpath, const hmesh_t& mesh, const double 
+    #ifdef MCUT_WITH_ARBITRARY_PRECISION_NUMBERS
+    multiplier
+#endif
+)
 {
 
     std::ofstream outfile(fpath);
@@ -1288,7 +1295,16 @@ void write_off(const char* fpath, const hmesh_t& mesh)
     for (vertex_array_iterator_t iter = mesh.vertices_begin(); iter != mesh.vertices_end(); ++iter) {
         // const vertex_data_t& vdata = iter.second;
         const vec3& point = mesh.vertex(*iter);
-        outfile << (double)point.x() << " " << (double)point.y() << " " << (double)point.z() << "\n";
+#ifdef MCUT_WITH_ARBITRARY_PRECISION_NUMBERS
+		outfile << (double)scalar_t::dequantize(point.x(), multiplier) << " "
+				<< (double)scalar_t::dequantize(point.y(), multiplier) << " "
+				<< (double)scalar_t::dequantize(point.z(), multiplier)
+				<< "\n";
+#else
+		outfile <<  point.x() << " "
+				<<  point.y() << " "
+				<<  point.z() << "\n";
+#endif
     }
 
     //
